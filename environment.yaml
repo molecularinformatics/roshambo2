@@ -1,0 +1,19 @@
+name: roshambo2
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - rdkit
+  - tqdm
+  - cmake
+  - pip
+  - pybind11
+  - h5py
+  - psutil
+  - flask
+  - requests
+  - pyyaml

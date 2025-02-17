@@ -1,0 +1,1 @@
+from .roshambo2 import Roshambo2, Roshambo2ServerMode

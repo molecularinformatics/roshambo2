@@ -1,0 +1,8 @@
+# config.yaml
+dataset_files:
+  - "../../test/dataset_split_2.sdf"
+hostname: "0.0.0.0"
+port: 8089
+api_name: "/roshambo2/search3"
+verbosity: 2
+

@@ -1,0 +1,8 @@
+# config.yaml
+dataset_files:
+  - "../dataset.sdf"
+hostname: "0.0.0.0"
+port: 8086
+api_name: "/roshambo2/search"
+verbosity: 2
+
