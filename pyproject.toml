@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "roshambo2"
-version = "2.0"
+version = "2.0.0"
 description = "3D molecular shape overlap"
 readme = "README.md"
 license = { file = "LICENSE" }
