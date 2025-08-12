@@ -1,4 +1,4 @@
-# ROSHAMBO2
+# ROSHAMBO 2.0
 
 Python program for molecular shape overlay calculation.
 
