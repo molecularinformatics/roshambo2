@@ -28,7 +28,8 @@ dependencies = [
     "psutil",
     "flask",
     "requests",
-    "pyyaml"
+    "pyyaml",
+    "pybind11"
 ]
 
 [project.urls]
