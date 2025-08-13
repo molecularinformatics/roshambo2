@@ -1,4 +1,4 @@
-# ROSHAMBO 2.0
+# ROSHAMBO2
 
 <div align="left" style="padding-bottom: 1em;">
 <img width="300px" align="center" src="https://raw.githubusercontent.com/molecularinformatics/roshambo2/main/doc/_img/logo.jpg">
