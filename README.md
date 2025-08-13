@@ -1,5 +1,9 @@
 # ROSHAMBO 2.0
 
+<div align="center" style="padding-bottom: 1em;">
+<img width="300px" align="center" src="https://raw.githubusercontent.com/molecularinformatics/roshambo2/main/doc/logo.jpg">
+</div>
+
 Python program for molecular shape overlay calculation.
 
 Uses the Gaussian description of molecular shape (Grant and Pickup 1995 https://doi.org/10.1021/j100011a016)
