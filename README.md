@@ -1,7 +1,7 @@
 # ROSHAMBO 2.0
 
 <div align="center" style="padding-bottom: 1em;">
-<img width="300px" align="center" src="https://raw.githubusercontent.com/molecularinformatics/roshambo2/main/doc/logo.jpg">
+<img width="300px" align="center" src="https://raw.githubusercontent.com/molecularinformatics/roshambo2/main/doc/_img/logo.jpg">
 </div>
 
 Python program for molecular shape overlay calculation.
