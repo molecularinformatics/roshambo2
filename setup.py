@@ -27,6 +27,21 @@ class CMakeExtension(Extension):
         self.sourcedir = os.fspath(Path(sourcedir).resolve())
 
 
+def _pybind11_cmake_dir() -> str:
+    """
+    Return the directory containing pybind11's CMake config files.
+    Works inside PEP 517 build isolation.
+    """
+    try:
+        import pybind11
+        return pybind11.get_cmake_dir()
+    except Exception:
+        out = subprocess.check_output(
+            [sys.executable, "-m", "pybind11", "--cmakedir"]
+        )
+        return out.decode().strip()
+
+
 class CMakeBuild(build_ext):
     def build_extension(self, ext: CMakeExtension) -> None:
         # Must be in this form due to bug in .resolve() only fixed in Python 3.10+
@@ -50,15 +65,15 @@ class CMakeBuild(build_ext):
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}{os.sep}",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
             f"-DCMAKE_BUILD_TYPE={cfg}",  # not used on MSVC, but no harm
+            f"-DEXAMPLE_VERSION_INFO={self.distribution.get_version()}",
+            # Point CMake at pybind11's CMake config (fixes build isolation discovery)
+            f"-Dpybind11_DIR={_pybind11_cmake_dir()}",
         ]
         build_args = []
         # Adding CMake arguments set as environment variable
         # (needed e.g. to build for ARM OSx on conda-forge)
         if "CMAKE_ARGS" in os.environ:
             cmake_args += [item for item in os.environ["CMAKE_ARGS"].split(" ") if item]
-
-        # In this example, we pass in the version to C++. You might not need to.
-        cmake_args += [f"-DEXAMPLE_VERSION_INFO={self.distribution.get_version()}"]
 
         if self.compiler.compiler_type != "msvc":
             # Using Ninja-build since it a) is available as a wheel and b)
@@ -114,21 +129,26 @@ class CMakeBuild(build_ext):
                 build_args += [f"-j{self.parallel}"]
 
         build_temp = Path(self.build_temp) / ext.name
-        if not build_temp.exists():
-            build_temp.mkdir(parents=True)
+        build_temp.mkdir(parents=True, exist_ok=True)
+
+        # Ensure CMake can also discover via prefix path
+        env = os.environ.copy()
+        p11 = _pybind11_cmake_dir()
+        env["CMAKE_PREFIX_PATH"] = p11 + os.pathsep + env.get("CMAKE_PREFIX_PATH", "")
 
         subprocess.run(
-            ["cmake", ext.sourcedir, *cmake_args], cwd=build_temp, check=True
+            ["cmake", ext.sourcedir, *cmake_args], cwd=build_temp, check=True, env=env
         )
         subprocess.run(
-            ["cmake", "--build", ".", *build_args], cwd=build_temp, check=True
+            ["cmake", "--build", ".", *build_args], cwd=build_temp, check=True, env=env
         )
-
 
 
 setup(
-    ext_modules=[CMakeExtension("_roshambo2_cuda"),CMakeExtension("_roshambo2_cpp")],
+    ext_modules=[CMakeExtension("_roshambo2_cuda"), CMakeExtension("_roshambo2_cpp")],
     cmdclass={"build_ext": CMakeBuild},
-    scripts=[ "roshambo2/scripts/prepare_dataset_from_sdf.py",
-         "roshambo2/scripts/roshambo2_server_app.py"]
+    scripts=[
+        "roshambo2/scripts/prepare_dataset_from_sdf.py",
+        "roshambo2/scripts/roshambo2_server_app.py",
+    ],
 )
