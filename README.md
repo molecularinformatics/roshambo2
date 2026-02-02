@@ -31,6 +31,11 @@ conda activate roshambo2
 ```
 pip install .
 ```
+or
+```
+CMAKE_ARGS="-DBUILD_WITH_CUDA=OFF" pip install . --no-build-isolation
+```
+if no CUDA available
 
 ## Documentation install
 
