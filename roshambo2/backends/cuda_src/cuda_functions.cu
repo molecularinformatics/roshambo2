@@ -237,7 +237,7 @@ __device__ void start_mode_transform(const float * mol, float * transformed_mol,
 // shape and color overap of molA and molB
 __device__ void volume_single(const float * molA, const int * molA_type, int molA_num_atoms, int NmolA, 
                               const float * molB, const int * molB_type, int molB_num_atoms, int NmolB,
-                              const float * rmat, const float * pmat, int N_features, float * v){
+                              const float * rmat, const float * pmat, int N_features, bool optim_color, float * v){
 
     const float PI = 3.14159265358;
     const float KAPPA = 2.41798793102;
@@ -273,31 +273,43 @@ __device__ void volume_single(const float * molA, const int * molA_type, int mol
         }
     }
 
-    for(int j=molB_num_atoms; j<NmolB; j++){
-        for(int i=molA_num_atoms; i<NmolA; i++){
+    // Everything past molX_num_atoms is colour features followed by padding.
+    // With colour scoring off there are no colour features and rmat/pmat are a
+    // 1x1 placeholder, so this loop would index them out of bounds and would
+    // evaluate exp(-a*a*d2/(a+a)) with a == 0, i.e. 0/0 -> NaN. Skip it.
+    if (optim_color){
+        for(int j=molB_num_atoms; j<NmolB; j++){
+            for(int i=molA_num_atoms; i<NmolA; i++){
 
-            float dx = molA[i*D]   - molB[j*D];
-            float dy = molA[i*D+1] - molB[j*D+1];
-            float dz = molA[i*D+2] - molB[j*D+2];
+                int ta = molA_type[i];
+                int tb = molB_type[j];
 
-            float d2 = dx*dx + dy*dy + dz*dz;        
+                float a = rmat[ta*N_features+tb];
 
-            int ta = molA_type[i];
-            int tb = molB_type[j];
+                // A zero interaction width means the feature pair does not
+                // interact, not that the Gaussian has zero width: its
+                // contribution is zero and evaluating it would divide by zero.
+                if (a == 0.0f) continue;
 
-            float a = rmat[ta*N_features+tb];
-            float p = pmat[ta*N_features+tb];
-        
-            float wa = molA[i*D+3];
-            float wb = molB[j*D+3];
+                float dx = molA[i*D]   - molB[j*D];
+                float dy = molA[i*D+1] - molB[j*D+1];
+                float dz = molA[i*D+2] - molB[j*D+2];
 
-            float kij = exp(-a*a*d2/(a+a))*wa*wb;
+                float d2 = dx*dx + dy*dy + dz*dz;
 
-            float constant = pow(PI/(2*a), 1.5);
+                float p = pmat[ta*N_features+tb];
 
-            float vij = p*p*kij*constant;
+                float wa = molA[i*D+3];
+                float wb = molB[j*D+3];
 
-            vc += vij;
+                float kij = exp(-a*a*d2/(a+a))*wa*wb;
+
+                float constant = pow(PI/(2*a), 1.5);
+
+                float vij = p*p*kij*constant;
+
+                vc += vij;
+            }
         }
     }
 
@@ -318,7 +330,7 @@ __device__ void volume_single(const float * molA, const int * molA_type, int mol
 // w.r.t q and t
 __device__ void get_gradient(const float * molA, const int * molA_type, int molA_num_atoms,int NmolA, 
                              const float * molB, const int * molB_type, int molB_num_atoms,int NmolB,
-                             const float * rmat, const float * pmat, int N_features, 
+                             const float * rmat, const float * pmat, int N_features, bool optim_color,
                              float * gradient, float * gradient_color, const float * q, const float * t, float * v){
     
 
@@ -413,6 +425,14 @@ __device__ void get_gradient(const float * molA, const int * molA_type, int molA
     #ifdef DEBUG
     printf("loop limits2: %d:%d %d:%d\n",molA_num_atoms, NmolA, molB_num_atoms, NmolB);
     #endif
+    // See volume_single(): with colour scoring off the range below holds only
+    // padding, rmat/pmat are a 1x1 placeholder, and a == 0 makes every term NaN.
+    if (!optim_color){
+        v[0] = vs;
+        v[1] = 0.0f;
+        return;
+    }
+
     // TODO: combine both loops to half the global memory access
     for( int j=molB_num_atoms; j<NmolB; j++){
 
@@ -436,7 +456,9 @@ __device__ void get_gradient(const float * molA, const int * molA_type, int molA
             float a = rmat[ta*N_features+tb];
             float p = pmat[ta*N_features+tb];
 
-            // if (a==0.0f) continue; //TODO
+            // A zero interaction width means this feature pair does not
+            // interact; its contribution is zero and 1/(2a) would be infinite.
+            if (a == 0.0f) continue;
 
 
             // molA needs to be translated by -t
@@ -619,11 +641,11 @@ __global__ void optimize(const float * molA_global, const int * molA_type_global
 
             volume_single(molA, molA_type, molA_num_atoms_i, NmolA,
                         molA, molA_type, molA_num_atoms_i, NmolA,
-                        rmat, pmat, N_features, va);
+                        rmat, pmat, N_features, optim_color, va);
 
             volume_single(molB, molB_type, molB_num_atom, NmolB,
                         molB, molB_type, molB_num_atom, NmolB,
-                        rmat, pmat, N_features, vb);
+                        rmat, pmat, N_features, optim_color, vb);
             
 
             #ifdef DEBUG
@@ -662,7 +684,7 @@ __global__ void optimize(const float * molA_global, const int * molA_type_global
 
                 get_gradient(molA, molA_type, molA_num_atoms_i, NmolA, 
                             molB, molB_type, molB_num_atom,    NmolB, 
-                            rmat, pmat, N_features,
+                            rmat, pmat, N_features, optim_color,
                             g, g_c, q, t, vs);
 
                 // 3. update
@@ -710,7 +732,7 @@ __global__ void optimize(const float * molA_global, const int * molA_type_global
             float temp[7]   = {0.0,0.0,0.0,0.0,0.0,0.0,0.0};
             get_gradient(molA, molA_type, molA_num_atoms_i, NmolA, 
                             molB, molB_type, molB_num_atom, NmolB, 
-                            rmat, pmat, N_features,
+                            rmat, pmat, N_features, optim_color,
                             temp,temp, q, t, vs);
 
 
