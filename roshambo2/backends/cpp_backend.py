@@ -57,6 +57,10 @@ class CppShapeOverlay:
         self.lr_t  = optimizer_settings['lr_t']
         self.steps = optimizer_settings['steps']
 
+        # See Roshambo2.compute(). Only affects colour and combination modes;
+        # shape-only results are identical either way.
+        self.legacy_combo_gradient = optimizer_settings.get('legacy_combo_gradient', False)
+
         self.scores = np.zeros((len(self.query_data.f_x), len(self.data.f_names), 20), dtype=np.float32)  # scores and transforms
 
 
@@ -70,7 +74,7 @@ class CppShapeOverlay:
                                    self.color_generator.interaction_matrix_r, 
                                    self.color_generator.interaction_matrix_p, 
                                    self.scores, True, self.mixing, self.lr_q, self.lr_t, self.steps, 
-                                   self.start_mode, self.verbosity)
+                                   self.start_mode, self.verbosity, self.legacy_combo_gradient)
 
         else:
 
@@ -80,7 +84,7 @@ class CppShapeOverlay:
                                     dummy, 
                                     dummy, 
                                     self.scores, False,0.0, self.lr_q, self.lr_t, self.steps, 
-                                    self.start_mode, self.verbosity)
+                                    self.start_mode, self.verbosity, self.legacy_combo_gradient)
             
         
         return self.scores

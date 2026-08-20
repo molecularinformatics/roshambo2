@@ -53,5 +53,6 @@ __device__ __constant__ int D = 4;
 
 void optimize_overlap_gpu(const float * molA, const int * molA_type, int molA_num_atoms,  int NmolA, 
                           const float * molBs,const int * molB_types, const int * molB_num_atoms, int NmolB, long num_molBs, 
-                          const float * rmat, const float * pmat, int N_features, float * scores, bool optim_color,  float lr_q, float lr_t, int nsteps, float mixing_param, int start_mode, int device_id);
+                          const float * rmat, const float * pmat, int N_features, float * scores, bool optim_color,  float lr_q, float lr_t, int nsteps, float mixing_param, int start_mode, int device_id,
+                          bool legacy_combo_gradient);
 

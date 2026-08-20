@@ -281,8 +281,10 @@ DTYPE volume_color(const DTYPE *molA, int NmolA, const int *molA_type,
 ////////////////////////////////////////////////////////////////////////////////
 
 std::array<DTYPE, 7> get_gradient(const DTYPE *molA, int NmolA,
-                                  const DTYPE *molB, int NmolB) {
+                                  const DTYPE *molB, int NmolB,
+                                  DTYPE *volume_out) {
   std::array<DTYPE, 7> grad = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  DTYPE V = 0.0;
 
   for (int i = 0; i < NmolA; i++) {
     for (int j = 0; j < NmolB; j++) {
@@ -323,9 +325,12 @@ std::array<DTYPE, 7> get_gradient(const DTYPE *molA, int NmolA,
       grad[4] += -2.0 * (a1 * a2) / (a1 + a2) * vij * delta[0];
       grad[5] += -2.0 * (a1 * a2) / (a1 + a2) * vij * delta[1];
       grad[6] += -2.0 * (a1 * a2) / (a1 + a2) * vij * delta[2];
+
+      V += vij;
     }
   }
 
+  if (volume_out != nullptr) *volume_out = V;
   return grad;
 }
 
@@ -352,8 +357,9 @@ std::array<DTYPE, 7> get_gradient_color(const DTYPE *molA, int NmolA,
                                         const int *molA_type, const DTYPE *molB,
                                         int NmolB, const int *molB_type,
                                         const DTYPE *rmat, const DTYPE *pmat,
-                                        int N_features) {
+                                        int N_features, DTYPE *volume_out) {
   std::array<DTYPE, 7> grad = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  DTYPE V = 0.0;
 
   for (int i = 0; i < NmolA; i++) {
     int ta = molA_type[i];
@@ -402,9 +408,40 @@ std::array<DTYPE, 7> get_gradient_color(const DTYPE *molA, int NmolA,
       grad[4] += -2.0 * (a * a) / (a + a) * vij * delta[0];
       grad[5] += -2.0 * (a * a) / (a + a) * vij * delta[1];
       grad[6] += -2.0 * (a * a) / (a + a) * vij * delta[2];
+
+      V += vij;
     }
   }
+  if (volume_out != nullptr) *volume_out = V;
   return grad;
+}
+
+// Per-channel gradient weights used to mix the shape and colour gradients.
+//
+// The reported score is a blend of two Tanimotos, so the gradient of that
+// score weights each channel by dT/dV = (V_AA + V_BB) / (V_AA + V_BB - V)^2,
+// evaluated at the current pose. Cauchy-Schwarz gives V <= sqrt(V_AA * V_BB)
+// < V_AA + V_BB for any rigid pose, so the denominator is strictly positive;
+// it is still guarded, because a molecule with no colour features at all has
+// every colour volume equal to zero.
+void combo_gradient_weights(DTYPE self_a, DTYPE self_b, DTYPE v,
+                            DTYPE self_a_color, DTYPE self_b_color,
+                            DTYPE v_color, bool legacy, DTYPE *w_shape,
+                            DTYPE *w_color) {
+  DTYPE sum = self_a + self_b;
+  DTYPE sum_color = self_a_color + self_b_color;
+
+  if (legacy) {
+    *w_shape = (sum > 0) ? 1.0 / sum : 0.0;
+    *w_color = (sum_color > 0) ? 1.0 / sum_color : 0.0;
+    return;
+  }
+
+  DTYPE den = sum - v;
+  *w_shape = (den > 0) ? sum / (den * den) : 0.0;
+
+  DTYPE den_color = sum_color - v_color;
+  *w_color = (den_color > 0) ? sum_color / (den_color * den_color) : 0.0;
 }
 
 void single_conformer_optimiser(
@@ -413,7 +450,8 @@ void single_conformer_optimiser(
     DTYPE self_overlap_A_color, const DTYPE *molB, DTYPE *molBT,
     const int *molB_type, int NmolB, int NmolB_real, int NmolB_color,
     const DTYPE *rmat, const DTYPE *pmat, int N_features, bool optim_color,
-    DTYPE mixing_param, DTYPE lr_q, DTYPE lr_t, int nsteps, DTYPE *scores) {
+    DTYPE mixing_param, DTYPE lr_q, DTYPE lr_t, int nsteps,
+    bool legacy_combo_gradient, DTYPE *scores) {
   std::array<DTYPE, 4> q = {1.0, 0.0, 0.0, 0.0};  // initial q
   std::array<DTYPE, 3> t = {0.0, 0.0, 0.0};       // initial t
 
@@ -441,25 +479,43 @@ void single_conformer_optimiser(
     DTYPE mt[3] = {-t[0], -t[1], -t[2]};
     translate(mt, molA, molAT, NmolA);
 
-    auto g = get_gradient(molAT, NmolA_real, molBT, NmolB_real);
-    g = g / (self_overlap_A + self_overlap_B);  // normalize
+    DTYPE v_shape = 0.0;
+    auto g = get_gradient(molAT, NmolA_real, molBT, NmolB_real, &v_shape);
 
     if (optim_color) {
       // For the color gradients, offset the coords and types to start at the
       // color features.
+      DTYPE v_color = 0.0;
       auto g_c = get_gradient_color(
           &molAT[NmolA_real * D], NmolA_color, &molA_type[NmolA_real],
           &molBT[NmolB_real * D], NmolB_color, &molB_type[NmolB_real], rmat,
-          pmat, N_features);
-      // normalize and combine
-      g_c = g_c / (self_overlap_A_color + self_overlap_B_color);
-      auto g_combo = (1 - mixing_param) * g + mixing_param * g_c;
+          pmat, N_features, &v_color);
+
+      // Weight each channel by its own dT/dV before mixing, so that g_combo is
+      // the gradient of the score that is actually reported. Scaling both
+      // channels by 1/(V_AA + V_BB) instead is not dT/dV; for a single channel
+      // that would be harmless, because Adagrad is invariant to a constant
+      // rescaling of the gradient, but here it sets the *relative* weight of
+      // two differently-scaled gradients, so the converged pose was not a
+      // stationary point of the reported score.
+      DTYPE w_shape, w_color;
+      combo_gradient_weights(self_overlap_A, self_overlap_B, v_shape,
+                             self_overlap_A_color, self_overlap_B_color,
+                             v_color, legacy_combo_gradient, &w_shape,
+                             &w_color);
+
+      auto g_combo =
+          ((1 - mixing_param) * w_shape) * g + (mixing_param * w_color) * g_c;
       adagrad_step(q, t, g_combo, cache, lr_q, lr_t);
     } else {
+      // Shape only. Any positive scalar rescaling of the gradient cancels
+      // exactly out of an Adagrad step, so this normalisation has never
+      // affected the trajectory and is left exactly as it was.
+      g = g / (self_overlap_A + self_overlap_B);
       adagrad_step(q, t, g, cache, lr_q, lr_t);
     }
     // normalize q so that it is a unit quaternion
-    DTYPE magq = sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] * q[3] * q[3]);
+    DTYPE magq = sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
 
     q = q / magq;
   }

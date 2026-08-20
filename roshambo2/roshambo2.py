@@ -52,6 +52,77 @@ Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 logger = logging.getLogger(__name__)
 
 
+# Tolerances for the invariants checked on every row the optimizer returns.
+QUATERNION_NORM_TOL = 1e-5
+CAUCHY_SCHWARZ_TOL = 1e-4
+
+
+def check_result_invariants(scores):
+    """Check two properties that must hold for every row the optimizer returns.
+
+    Both cost a handful of flops per row against an O(N_atoms**2) x N_steps
+    optimizer, so they are effectively free, and together they detect a whole
+    class of defect: a reported "pose" that is not a rigid motion of the input
+    molecule.
+
+    1. ``| ||q|| - 1 | <= QUATERNION_NORM_TOL``.
+
+       The reported quaternion is fed to a rotation-matrix expression that
+       assumes unit norm. Given a quaternion of true norm ``s`` that expression
+       returns ``s**2 * R(q/s) + (1 - s**2) * I``, an anisotropic stretch with
+       ``det != 1``. So a non-unit quaternion means the pose that was scored,
+       and that gets applied to the output coordinates, is not a rotation.
+
+    2. ``V_AB <= sqrt(V_AA * V_BB) * (1 + CAUCHY_SCHWARZ_TOL)``.
+
+       All shape Gaussians share a single width, so ``V_AB`` is the inner
+       product of the two density fields in the kernel's RKHS and
+       Cauchy-Schwarz bounds it for *any* pose, with equality only for a
+       perfect self-match. Exceeding it means the reported overlap is not
+       achievable by any rigid placement of the two molecules.
+
+       The other plausible bound, ``V_AB <= min(V_AA, V_BB)``, is *false* for
+       this first-order expression -- there is no inclusion-exclusion
+       correction, and ratios above 2 occur routinely -- so it is not checked.
+
+    Args:
+        scores (np.ndarray): raw ``(n_query, n_fit, 20)`` array from a backend.
+
+    Raises:
+        RuntimeError: if either invariant is violated, identifying the worst row.
+    """
+    scores = np.asarray(scores)
+
+    qnorm = np.linalg.norm(scores[..., 9:13], axis=-1)
+    qerr = np.abs(qnorm - 1.0)
+    if not np.all(qerr <= QUATERNION_NORM_TOL):
+        # nan_to_num rather than nanargmax: a row can be entirely NaN, and the
+        # diagnostic must not itself raise a different exception.
+        i = np.unravel_index(np.argmax(np.nan_to_num(qerr, nan=np.inf)), qerr.shape)
+        raise RuntimeError(
+            "roshambo2: the optimizer returned a non-unit quaternion, so the "
+            f"reported pose is not a rotation. Worst row {i}: ||q|| = "
+            f"{qnorm[i]!r}, tolerance {QUATERNION_NORM_TOL}."
+        )
+
+    v_ab, v_aa, v_bb = scores[..., 3], scores[..., 5], scores[..., 6]
+    valid = (v_aa > 0) & (v_bb > 0)
+    if np.any(valid):
+        ratio = np.full(v_ab.shape, np.nan)
+        np.divide(v_ab, np.sqrt(v_aa * v_bb), out=ratio, where=valid)
+        if not np.all(ratio[valid] <= 1.0 + CAUCHY_SCHWARZ_TOL):
+            i = np.unravel_index(
+                np.argmax(np.nan_to_num(np.where(valid, ratio, -np.inf), nan=np.inf)),
+                ratio.shape)
+            raise RuntimeError(
+                "roshambo2: the reported shape overlap exceeds the "
+                "Cauchy-Schwarz bound sqrt(V_AA * V_BB), so it is not "
+                f"achievable by any rigid pose. Worst row {i}: "
+                f"V_AB/sqrt(V_AA*V_BB) = {ratio[i]!r}, tolerance "
+                f"{1.0 + CAUCHY_SCHWARZ_TOL}."
+            )
+
+
 class Roshambo2():
     """ Roshambo2 class
 
@@ -305,8 +376,17 @@ class Roshambo2():
         
         Keyword Args:
             optimizer_settings (dict): Settings passed to the optimizer, default is `{'lr_q':0.1, 'lr_t':0.1, 'steps':100}`.
-        
-        
+
+                An optional `'legacy_combo_gradient'` key (default `False`) restores the previous gradient
+                weighting for `optim_mode='color'` and `optim_mode='combination'`. By default the shape and
+                color gradients are each weighted by their own `dT/dV = (V_AA+V_BB)/(V_AA+V_BB-V)**2`, so the
+                mixed gradient is the gradient of the blended Tanimoto that is actually reported. Previously
+                both channels were weighted by `1/(V_AA+V_BB)`, which is not `dT/dV` and therefore set the
+                wrong *relative* weight between two differently-scaled gradients. Set this to `True` to
+                reproduce results from earlier versions. It has no effect on `optim_mode='shape'`, where the
+                normalization cancels out of the Adagrad step entirely.
+
+
         Returns:
                 Dict[str, pd.DataFrame]: A dictionary of Pandas DataFrames for each query molecule, containing the sorted overlap scores of the best dataset molecules. Each DataFrame includes overlap volumes and self-overlap volumes to facilitate post-processing of other score types. The columns include:
 
@@ -616,6 +696,9 @@ class Roshambo2():
         logger.info('Staring optimization')
         t1_opt = time.perf_counter()
         results = backend.optimize_overlap()
+
+        # Cheap, unconditional sanity checks on 100% of the returned rows.
+        check_result_invariants(results)
 
         #memuse_results = sum([results.nbytes / (1024**2) for results in results_list])
 

@@ -316,13 +316,16 @@ std::array<DTYPE,2> self_overlap_single_color(py::array_t<DTYPE> A, py::array_t<
 /// @param lr_q - learning rate for optimising the quaternion
 /// @param lr_t - learning rate for optimising the translation
 /// @param nsteps - number of optimiser steps
+/// @param legacy_combo_gradient - if true, weight the shape and colour
+///        gradients by 1/(V_AA+V_BB) as previous releases did, instead of by
+///        each channel's dT/dV. Only affects colour/combination modes.
 /// @param start_mode_method - 0, 1, or 2 with increasingly more start points
 /// @param loglevel - how wordy the output should be
 void optimize_overlap_color(py::array_t<DTYPE> A, py::array_t<int> AT, py::array_t<int> AN,
                             py::array_t<DTYPE> B, py::array_t<int> BT, py::array_t<int> BN, 
                             py::array_t<DTYPE> RMAT, py::array_t<DTYPE> PMAT, py::array_t<DTYPE> V, 
                             bool optim_color, DTYPE mixing_param, DTYPE lr_q, DTYPE lr_t, int nsteps,
-                            int start_mode_method, int loglevel){
+                            int start_mode_method, int loglevel, bool legacy_combo_gradient){
 
     // shared arrays/pointers
     auto molAs  = A.unchecked<3>();
@@ -407,10 +410,15 @@ void optimize_overlap_color(py::array_t<DTYPE> A, py::array_t<int> AT, py::array
 										   self_overlap_A, self_overlap_A_color,
                                            ptr_molB, molBT, ptr_molB_type,
 										   NmolB, NmolB_real, NmolB_color, ptr_rmat, ptr_pmat, N_features,
-										   optim_color, mixing_param, lr_q, lr_t, nsteps, these_scores);
+										   optim_color, mixing_param, lr_q, lr_t, nsteps,
+										   legacy_combo_gradient, these_scores);
 
-                // check the previous ones and keep the best
-                if (these_scores[0] > scores(k,j,0)){
+                // Check the previous ones and keep the best. The first start
+                // mode always writes, so that every row reports a real pose:
+                // otherwise a pair whose every start mode scored <= 0 (or NaN,
+                // which compares false) would keep the zero-initialised score
+                // row, including a zero quaternion that is not a rotation.
+                if (start_index == 0 || these_scores[0] > scores(k,j,0)){
                     scores(k,j,0) = these_scores[0]; // combination tanimoto of shape and color
                     scores(k,j,1) = these_scores[1]; // shape tanimoto
                     scores(k,j,2) = these_scores[2]; // color tanimoto
@@ -517,7 +525,11 @@ void test_overlap(py::array_t<DTYPE> A, py::array_t<DTYPE> B, py::array_t<DTYPE>
 /// Bindings for Python
 ////////////////////////////////////////////////////////////////////////////////
 PYBIND11_MODULE(_roshambo2_cpp, m) { 
-    m.def("optimize_overlap_color", &optimize_overlap_color, "computes overlap of ref mol A with fit mols B with color");
+    m.def("optimize_overlap_color", &optimize_overlap_color, "computes overlap of ref mol A with fit mols B with color",
+          py::arg("A"), py::arg("AT"), py::arg("AN"), py::arg("B"), py::arg("BT"), py::arg("BN"),
+          py::arg("RMAT"), py::arg("PMAT"), py::arg("V"), py::arg("optim_color"), py::arg("mixing_param"),
+          py::arg("lr_q"), py::arg("lr_t"), py::arg("nsteps"), py::arg("start_mode_method"),
+          py::arg("loglevel"), py::arg("legacy_combo_gradient") = false);
     m.def("test_overlap", &test_overlap, "computes overlap of ref mol A with fit mols B");
     m.def("test_overlap_single", &test_overlap_single, "single overlap for testing");
     m.def("test_gradient", &test_gradient, "quaternion gradient of single overlap for testing");

@@ -531,12 +531,40 @@ __device__ void adagrad_step(float *q, float *t,  float * g,
     t[2] -= lr_t*g[6]/(sqrt(cache[6])+EPSILON);
 }
 
+// Per-channel gradient weights used to mix the shape and colour gradients.
+//
+// The reported score is a blend of two Tanimotos, so the gradient of that
+// score weights each channel by dT/dV = (V_AA + V_BB) / (V_AA + V_BB - V)^2,
+// evaluated at the current pose. Cauchy-Schwarz gives V <= sqrt(V_AA * V_BB)
+// < V_AA + V_BB for any rigid pose, so the denominator is strictly positive;
+// it is still guarded, because a molecule with no colour features at all has
+// every colour volume equal to zero.
+__device__ void combo_gradient_weights(const float * va, const float * vb, const float * v,
+                                       bool legacy, float * w_shape, float * w_color){
+
+    float sum       = va[0] + vb[0];
+    float sum_color = va[1] + vb[1];
+
+    if (legacy){
+        *w_shape = (sum       > 0.0f) ? 1.0f/sum       : 0.0f;
+        *w_color = (sum_color > 0.0f) ? 1.0f/sum_color : 0.0f;
+        return;
+    }
+
+    float den = sum - v[0];
+    *w_shape = (den > 0.0f) ? sum/(den*den) : 0.0f;
+
+    float den_color = sum_color - v[1];
+    *w_color = (den_color > 0.0f) ? sum_color/(den_color*den_color) : 0.0f;
+}
+
 // optimization kernel. Entry point to the cude kernel code from the c++  cuda
 // interface code. 
 __global__ void optimize(const float * molA_global, const int * molA_type_global, const int molA_num_atoms_i,  int NmolA, 
                          const float * molBs,       const int * molB_types,       const int * molB_num_atoms,  int NmolB, 
                          const float * rmat_global, const float * pmat_global, int N_features,
-                         float * scores, int Nv, bool optim_color, float lr_q, float lr_t, int nsteps, float mixing_param, int start_mode){
+                         float * scores, int Nv, bool optim_color, float lr_q, float lr_t, int nsteps, float mixing_param, int start_mode,
+                         bool legacy_combo_gradient){
     
 
     // each thead works on one overlap
@@ -645,14 +673,10 @@ __global__ void optimize(const float * molA_global, const int * molA_type_global
 
             float cache[7] = {0.0,0.0,0.0,0.0,0.0,0.0,0.0}; //for optimizer
 
-            float g_factor   = 1.0/(va[0]+vb[0]);
-
-            // this can NaN if the self color is zero
-            float g_c_factor;
-            if(optim_color) 
-                g_c_factor = 1.0/(va[1]+vb[1]);
-            else
-                g_c_factor = 0.0;
+            // Shape-only normalisation. Any positive scalar rescaling of the
+            // gradient cancels exactly out of an Adagrad step, so this has
+            // never affected the shape-only trajectory; it is left as it was.
+            float g_factor = 1.0/(va[0]+vb[0]);
 
             for(int k=0; k < nsteps; ++k){
 
@@ -666,37 +690,44 @@ __global__ void optimize(const float * molA_global, const int * molA_type_global
                             g, g_c, q, t, vs);
 
                 // 3. update
-                
+
                 // normalize and combine
 
-                #pragma unroll
-                for(int i=0;i<7;++i){
-                    g[i] = g[i]*g_factor;
-                }
-                
                 if (optim_color){
-                
+
+                    // Weight each channel by its own dT/dV before mixing, so
+                    // that g_combo is the gradient of the score that is
+                    // actually reported. Scaling both channels by 1/(V_AA+V_BB)
+                    // instead is not dT/dV; for a single channel that would be
+                    // harmless, because Adagrad is invariant to a constant
+                    // rescaling of the gradient, but here it sets the
+                    // *relative* weight of two differently-scaled gradients, so
+                    // the converged pose was not a stationary point of the
+                    // reported score.
+                    float w_shape, w_color;
+                    combo_gradient_weights(va, vb, vs, legacy_combo_gradient, &w_shape, &w_color);
+
+                    float a_shape = (1-mixing_param)*w_shape;
+                    float a_color = mixing_param*w_color;
+
                     #pragma unroll
                     for(int i=0;i<7;++i){
-                        g_c[i] = g_c[i]*g_c_factor;
+                        g_combo[i] = a_shape*g[i] + a_color*g_c[i];
                     }
-                    
-                    
-                    #pragma unroll
-                    for(int i=0;i<7;++i){
-                        g_combo[i] = (1-mixing_param)*g[i]+ mixing_param*g_c[i];
-                    }
-                    
-                    
+
                     adagrad_step(q,t,g_combo, cache, lr_q, lr_t);
                 }
                 else{
+                    #pragma unroll
+                    for(int i=0;i<7;++i){
+                        g[i] = g[i]*g_factor;
+                    }
                     adagrad_step(q,t,g, cache, lr_q, lr_t);
                 }
 
                 
                 //normalize q
-                float magq = sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] * q[3]*q[3]);
+                float magq = sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
 
                 // std::cout << magq << std::endl;
                 q[0] = q[0]/magq;
@@ -736,8 +767,12 @@ __global__ void optimize(const float * molA_global, const int * molA_type_global
             printf("completed optim on %d\n", idx);
             #endif
 
-            // check if this start mode is the best
-            if (total > scores_register[0]){
+            // Check if this start mode is the best. The first start mode always
+            // writes, so that every row reports a real pose: otherwise a pair
+            // whose every start mode scored <= 0 (or NaN, which compares false)
+            // would keep the register initialiser and be returned as an
+            // all-zero row, including a zero quaternion that is not a rotation.
+            if (n == 0 || total > scores_register[0]){
                 // store the scores, volumes, and transformation
                 scores_register[0] = total; // combination tanimoto of shape and color
                 scores_register[1] = ts; // shape tanimoto
@@ -804,7 +839,8 @@ __global__ void optimize(const float * molA_global, const int * molA_type_global
 // This is the entry point function. The optimization kernel is lauched from here
 void optimize_overlap_gpu(const float * molA, const int * molA_type, int molA_num_atoms,  int NmolA, 
                           const float * molBs,const int * molB_types, const int * molB_num_atoms, int NmolB, long num_molBs, 
-                          const float * rmat, const float * pmat, int N_features, float * scores, bool optim_color, float lr_q, float lr_t, int nsteps, float mixing_param, int start_mode, int device_id){
+                          const float * rmat, const float * pmat, int N_features, float * scores, bool optim_color, float lr_q, float lr_t, int nsteps, float mixing_param, int start_mode, int device_id,
+                          bool legacy_combo_gradient){
 
 
     #ifdef DEBUG
@@ -826,7 +862,8 @@ void optimize_overlap_gpu(const float * molA, const int * molA_type, int molA_nu
     cudaSetDevice(device_id); optimize<<<gridDim,blockDim,sharedMemSize>>>(molA,  molA_type,  molA_num_atoms, NmolA,
                                                  molBs, molB_types, molB_num_atoms,  NmolB, 
                                                  rmat,  pmat, N_features,
-                                                 scores, Nv, optim_color,lr_q, lr_t, nsteps, mixing_param, start_mode);
+                                                 scores, Nv, optim_color,lr_q, lr_t, nsteps, mixing_param, start_mode,
+                                                 legacy_combo_gradient);
     cudaSetDevice(device_id); cudaGetLastError();
     cudaSetDevice(device_id); cudaDeviceSynchronize();
     cudaSetDevice(device_id); cudaGetLastError();
