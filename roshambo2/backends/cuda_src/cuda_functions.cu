@@ -767,8 +767,12 @@ __global__ void optimize(const float * molA_global, const int * molA_type_global
             printf("completed optim on %d\n", idx);
             #endif
 
-            // check if this start mode is the best
-            if (total > scores_register[0]){
+            // Check if this start mode is the best. The first start mode always
+            // writes, so that every row reports a real pose: otherwise a pair
+            // whose every start mode scored <= 0 (or NaN, which compares false)
+            // would keep the register initialiser and be returned as an
+            // all-zero row, including a zero quaternion that is not a rotation.
+            if (n == 0 || total > scores_register[0]){
                 // store the scores, volumes, and transformation
                 scores_register[0] = total; // combination tanimoto of shape and color
                 scores_register[1] = ts; // shape tanimoto

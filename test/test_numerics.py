@@ -309,3 +309,99 @@ def test_combo_gradient_reaches_a_better_blended_tanimoto(backend):
     assert not np.array_equal(new[:, :, 0], old[:, :, 0])
 
     assert np.mean(new[:, :, 0]) >= np.mean(old[:, :, 0])
+
+
+# --------------------------------------------------------------------------
+# The two permanent invariants, checked on 100% of returned rows.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("start_mode", [0, 1, 2])
+@pytest.mark.parametrize("color", [False, True])
+def test_overlap_respects_cauchy_schwarz(backend, start_mode, color):
+    """V_AB <= sqrt(V_AA * V_BB) for any rigid pose.
+
+    All shape Gaussians share one width, so V_AB is the inner product of the
+    two density fields in the kernel's RKHS and Cauchy-Schwarz applies for any
+    pose whatsoever.  Exceeding it means the reported overlap is achievable by
+    no rigid placement of the two molecules.
+
+    The other plausible bound, V_AB <= min(V_AA, V_BB), is *false* for this
+    first-order expression -- there is no inclusion-exclusion correction -- so
+    it is deliberately not asserted.
+    """
+    scores = _run(backend, start_mode, color)
+    v_ab, v_aa, v_bb = scores[:, :, 3], scores[:, :, 5], scores[:, :, 6]
+    ratio = v_ab / np.sqrt(v_aa * v_bb)
+    assert np.all(np.isfinite(ratio))
+    worst = float(np.max(ratio))
+    assert worst <= 1.0 + 1e-4, f"max V_AB/sqrt(V_AA V_BB) = {worst:.6f}"
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_self_match_saturates_cauchy_schwarz(backend):
+    """A molecule against itself must reach the bound, so it is not vacuous."""
+    mols = _load("dataset.sdf", 8)
+    data = prepare_from_rdkitmols(mols, color=False, quiet=True)
+    if backend == "cuda":
+        overlay = CudaShapeOverlay(data, data, 0, verbosity=0, n_gpus=1)
+    else:
+        overlay = CppShapeOverlay(data, data, 0, verbosity=0)
+    scores = np.array(overlay.optimize_overlap())
+    diag = np.array([scores[i, i] for i in range(len(mols))])
+    ratio = diag[:, 3] / np.sqrt(diag[:, 5] * diag[:, 6])
+    assert np.allclose(ratio, 1.0, atol=1e-3), ratio
+
+
+def _good_row():
+    row = np.zeros((1, 1, 20), dtype=np.float64)
+    row[0, 0, 3] = 500.0     # V_AB
+    row[0, 0, 5] = 1000.0    # V_AA
+    row[0, 0, 6] = 1000.0    # V_BB
+    row[0, 0, 9] = 1.0       # identity quaternion
+    return row
+
+
+def test_invariant_checker_accepts_a_valid_row():
+    from roshambo2.roshambo2 import check_result_invariants
+    check_result_invariants(_good_row())
+
+
+def test_invariant_checker_rejects_a_non_unit_quaternion():
+    from roshambo2.roshambo2 import check_result_invariants
+    row = _good_row()
+    row[0, 0, 9] = 1.01
+    with pytest.raises(RuntimeError, match="non-unit quaternion"):
+        check_result_invariants(row)
+
+
+def test_invariant_checker_rejects_a_cauchy_schwarz_violation():
+    from roshambo2.roshambo2 import check_result_invariants
+    row = _good_row()
+    row[0, 0, 3] = 1010.0     # V_AB above sqrt(V_AA * V_BB) = 1000
+    with pytest.raises(RuntimeError, match="Cauchy-Schwarz"):
+        check_result_invariants(row)
+
+
+def test_invariant_checker_allows_v_ab_above_min_self_overlap():
+    """V_AB <= min(V_AA, V_BB) must NOT be enforced: it is false here."""
+    from roshambo2.roshambo2 import check_result_invariants
+    row = _good_row()
+    row[0, 0, 5] = 400.0      # V_AA
+    row[0, 0, 6] = 2500.0     # V_BB; sqrt(V_AA*V_BB) = 1000
+    row[0, 0, 3] = 900.0      # above min(V_AA, V_BB) but below the bound
+    check_result_invariants(row)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("start_mode", [0, 1, 2])
+@pytest.mark.parametrize("optim_mode", ["shape", "color", "combination"])
+def test_frontend_enforces_invariants(backend, start_mode, optim_mode):
+    """The checks run on every compute() call, for every mode."""
+    from roshambo2 import Roshambo2
+
+    calc = Roshambo2("query.sdf", "dataset.sdf",
+                     color=optim_mode != "shape", verbosity=0)
+    calc.compute(backend=backend, start_mode=start_mode, optim_mode=optim_mode,
+                 combination_param=0.5 if optim_mode == "combination" else None,
+                 write_scores=False)

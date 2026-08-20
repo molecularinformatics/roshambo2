@@ -413,8 +413,12 @@ void optimize_overlap_color(py::array_t<DTYPE> A, py::array_t<int> AT, py::array
 										   optim_color, mixing_param, lr_q, lr_t, nsteps,
 										   legacy_combo_gradient, these_scores);
 
-                // check the previous ones and keep the best
-                if (these_scores[0] > scores(k,j,0)){
+                // Check the previous ones and keep the best. The first start
+                // mode always writes, so that every row reports a real pose:
+                // otherwise a pair whose every start mode scored <= 0 (or NaN,
+                // which compares false) would keep the zero-initialised score
+                // row, including a zero quaternion that is not a rotation.
+                if (start_index == 0 || these_scores[0] > scores(k,j,0)){
                     scores(k,j,0) = these_scores[0]; // combination tanimoto of shape and color
                     scores(k,j,1) = these_scores[1]; // shape tanimoto
                     scores(k,j,2) = these_scores[2]; // color tanimoto
