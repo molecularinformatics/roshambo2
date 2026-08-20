@@ -10,52 +10,9 @@ MIT License. Copyright (c) 2025
 
 ## Install
 
-This software is distributed in source code form. It can be build with pip inside an appropriate conda environment. Please follow the steps below.
-
-1. clone this repo or (extract from tar archive/zip folder).
-
-```
-git clone <repo>
-```
-
-2. create a conda environment with the provided yaml file
-
-```
-cd roshambo2
-conda env create -n roshambo2 -f environment.yaml
-conda activate roshambo2
-```
-
-3. install this package
-
-```
-pip install .
-```
-
-## Documentation install
-
-To build and view the documentation please go into the `doc` folder.
-You will then need to install the extra dependencies to your conda environment:
-
-```
-conda install  -c sphinx pydata-sphinx-theme myst-parser
-```
-
-You can then build the html docs with:
-
-```
-make html
-```
-
-And you can view them in your browser:
-
-```
-xdg-open build/html/index.html
-```
-
-## Requirements
-
-A CMake build system is used to compile the C++ and CUDA code. You will need to have a working C++ and nvcc compiler. Cmake will need to be able to find your CUDA installation.
+See [INSTALL.md](INSTALL.md) for full installation instructions, including
+the conda and [uv](https://docs.astral.sh/uv/) paths, CMake requirements, and
+how to target specific GPU architectures.
 
 ## Usage
 

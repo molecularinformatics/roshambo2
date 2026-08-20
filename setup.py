@@ -18,9 +18,8 @@ PLAT_TO_CMAKE = {
 }
 
 
-# A CMakeExtension needs a sourcedir instead of a file list.
-# The name must be the _single_ output extension from the CMake build.
-# If you need multiple extensions, see scikit-build.
+# A CMakeExtension needs a sourcedir instead of a file list. Several may share
+# one sourcedir; CMakeBuild.build_extensions() configures and builds it once.
 class CMakeExtension(Extension):
     def __init__(self, name: str, sourcedir: str = "") -> None:
         super().__init__(name, sources=[])
@@ -43,9 +42,25 @@ def _pybind11_cmake_dir() -> str:
 
 
 class CMakeBuild(build_ext):
-    def build_extension(self, ext: CMakeExtension) -> None:
+    def build_extensions(self) -> None:
+        # Both extensions come from the same CMakeLists.txt, and CMake already
+        # builds every target in one configure+build pass. The stock
+        # cmake_example pattern calls build_extension() once per Extension,
+        # which ran the whole project twice here -- each pass compiling both
+        # targets -- roughly doubling the build time.
+        self.check_extensions_list(self.extensions)
+        exts = list(self.extensions)
+        if not exts:
+            return
+        sourcedir = exts[0].sourcedir
+        assert all(e.sourcedir == sourcedir for e in exts), (
+            "all CMakeExtensions must share the same sourcedir"
+        )
+
         # Must be in this form due to bug in .resolve() only fixed in Python 3.10+
-        ext_fullpath = Path.cwd() / self.get_ext_fullpath(ext.name)
+        # Both targets install to the same directory, so any one extension's
+        # output path gives the right CMAKE_LIBRARY_OUTPUT_DIRECTORY.
+        ext_fullpath = Path.cwd() / self.get_ext_fullpath(exts[0].name)
         extdir = ext_fullpath.parent.resolve()
 
         # Using this requires trailing slash for auto-detection & inclusion of
@@ -63,7 +78,13 @@ class CMakeBuild(build_ext):
         # from Python.
         cmake_args = [
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}{os.sep}",
+            # Pass both the legacy (FindPythonInterp) and modern (FindPython)
+            # hints. pybind11 >= 3 defaults to CMake's new FindPython, which
+            # ignores the lowercase PYTHON_EXECUTABLE and would otherwise pick
+            # a system interpreter whose dev headers may be absent -- which is
+            # what happens under pip/uv build isolation.
             f"-DPYTHON_EXECUTABLE={sys.executable}",
+            f"-DPython_EXECUTABLE={sys.executable}",
             f"-DCMAKE_BUILD_TYPE={cfg}",  # not used on MSVC, but no harm
             f"-DEXAMPLE_VERSION_INFO={self.distribution.get_version()}",
             # Point CMake at pybind11's CMake config (fixes build isolation discovery)
@@ -128,7 +149,8 @@ class CMakeBuild(build_ext):
                 # CMake 3.12+ only.
                 build_args += [f"-j{self.parallel}"]
 
-        build_temp = Path(self.build_temp) / ext.name
+        # One shared build tree for the whole CMake project (both targets).
+        build_temp = Path(self.build_temp) / "roshambo2_cmake"
         build_temp.mkdir(parents=True, exist_ok=True)
 
         # Ensure CMake can also discover via prefix path
@@ -137,7 +159,7 @@ class CMakeBuild(build_ext):
         env["CMAKE_PREFIX_PATH"] = p11 + os.pathsep + env.get("CMAKE_PREFIX_PATH", "")
 
         subprocess.run(
-            ["cmake", ext.sourcedir, *cmake_args], cwd=build_temp, check=True, env=env
+            ["cmake", sourcedir, *cmake_args], cwd=build_temp, check=True, env=env
         )
         subprocess.run(
             ["cmake", "--build", ".", *build_args], cwd=build_temp, check=True, env=env
