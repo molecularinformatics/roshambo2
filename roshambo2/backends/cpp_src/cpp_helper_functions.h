@@ -124,10 +124,12 @@ DTYPE volume_color(const DTYPE *molA, int NmolA, const int *molA_type,
 /// @param NmolA
 /// @param molB
 /// @param NmolB
+/// @param volume_out - if not null, receives the overlap volume at this pose
 /// @return array[7] containing the quaternion gradients and the position
 /// gradients
 std::array<DTYPE, 7> get_gradient(const DTYPE *molA, int NmolA,
-                                  const DTYPE *molB, int NmolB);
+                                  const DTYPE *molB, int NmolB,
+                                  DTYPE *volume_out = nullptr);
 
 /// @brief compute overlap color gradients of molA and molB w.r.t molB
 /// @param molA
@@ -139,17 +141,30 @@ std::array<DTYPE, 7> get_gradient(const DTYPE *molA, int NmolA,
 /// @param rmat
 /// @param pmat
 /// @param N_features
+/// @param volume_out - if not null, receives the colour overlap volume at this
+/// pose
 /// @return array[7] containing the quaternion gradients and the position
 /// gradients
 std::array<DTYPE, 7> get_gradient_color(const DTYPE *molA, int NmolA,
                                         const int *molA_type, const DTYPE *molB,
                                         int NmolB, const int *molB_type,
                                         const DTYPE *rmat, const DTYPE *pmat,
-                                        int N_features);
+                                        int N_features,
+                                        DTYPE *volume_out = nullptr);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// Optimization functions
 ////////////////////////////////////////////////////////////////////////////////
+
+/// @brief per-channel weights for mixing the shape and colour gradients
+///
+/// The reported score is a blend of two Tanimotos, so its gradient weights each
+/// channel by dT/dV = (V_AA + V_BB) / (V_AA + V_BB - V)^2 at the current pose.
+/// @param legacy - if true, use the previous weight 1/(V_AA + V_BB) instead
+void combo_gradient_weights(DTYPE self_a, DTYPE self_b, DTYPE v,
+                            DTYPE self_a_color, DTYPE self_b_color,
+                            DTYPE v_color, bool legacy, DTYPE *w_shape,
+                            DTYPE *w_color);
 
 // Adagrad optimization step
 void adagrad_step(std::array<DTYPE, 4> &q, std::array<DTYPE, 3> &t,
@@ -207,6 +222,7 @@ void single_conformer_optimiser(
     DTYPE self_overlap_A_color, const DTYPE *molB, DTYPE *molBT,
     const int *molB_type, int NmolB, int NmolB_real, int NmolB_color,
     const DTYPE *rmat, const DTYPE *pmat, int N_features, bool optim_color,
-    DTYPE mixing_param, DTYPE lr_q, DTYPE lr_t, int nsteps, DTYPE *scores);
+    DTYPE mixing_param, DTYPE lr_q, DTYPE lr_t, int nsteps,
+    bool legacy_combo_gradient, DTYPE *scores);
 
 #endif  //_ROSHAMBO2_CPP_HELPER_FUNCTIONS_H

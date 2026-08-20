@@ -57,11 +57,14 @@ enum loglevel {
 /// @param V 
 /// @param optim_color 
 /// @param mixing_param 
+/// @param legacy_combo_gradient - if true, weight the shape and colour
+///        gradients by 1/(V_AA+V_BB) as previous releases did, instead of by
+///        each channel's dT/dV. Only affects colour/combination modes.
 void optimize_overlap_color(py::array_t<float> A, py::array_t<int> AT, py::array_t<int> AN,
                             py::array_t<float> B, py::array_t<int> BT, py::array_t<int> BN, 
                             py::array_t<float> RMAT, py::array_t<float> PMAT, py::array_t<float> V,
                             bool optim_color, float mixing_param, float lr_q, float lr_t, int nsteps, 
-                            int start_mode_method, int requested_gpus, int loglevel){
+                            int start_mode_method, int requested_gpus, int loglevel, bool legacy_combo_gradient){
     
     const int D = 4;
 
@@ -335,7 +338,8 @@ void optimize_overlap_color(py::array_t<float> A, py::array_t<int> AT, py::array
             // loop over dataset molecules is done inside the kernel
             optimize_overlap_gpu(molA_devices[n], molA_type_devices[n], molA_num_atoms_i,      NmolA, 
                                 molBs_devices[n],molBs_type_devices[n], molBs_num_atoms_devices[n], NmolBs[n], num_molBss[n], 
-                                rmat_devices[n], pmat_devices[n], N_features, scores_devices[n], optim_color, lr_q, lr_t, nsteps, mixing_param, start_mode_method, device_id);
+                                rmat_devices[n], pmat_devices[n], N_features, scores_devices[n], optim_color, lr_q, lr_t, nsteps, mixing_param, start_mode_method, device_id,
+                                legacy_combo_gradient);
 
             if(loglevel == DEBUG){
                 printf("roshambo2.cuda: completed kernel for thead %d on device %d\n", thread_id, device_id);
@@ -366,5 +370,9 @@ void optimize_overlap_color(py::array_t<float> A, py::array_t<int> AT, py::array
 
 
 PYBIND11_MODULE(_roshambo2_cuda, m) { 
-    m.def("optimize_overlap_color", &optimize_overlap_color, "computes overlap of ref mol A with fit mols B");
+    m.def("optimize_overlap_color", &optimize_overlap_color, "computes overlap of ref mol A with fit mols B",
+          py::arg("A"), py::arg("AT"), py::arg("AN"), py::arg("B"), py::arg("BT"), py::arg("BN"),
+          py::arg("RMAT"), py::arg("PMAT"), py::arg("V"), py::arg("optim_color"), py::arg("mixing_param"),
+          py::arg("lr_q"), py::arg("lr_t"), py::arg("nsteps"), py::arg("start_mode_method"),
+          py::arg("requested_gpus"), py::arg("loglevel"), py::arg("legacy_combo_gradient") = false);
 }

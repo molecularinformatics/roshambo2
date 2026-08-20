@@ -305,8 +305,17 @@ class Roshambo2():
         
         Keyword Args:
             optimizer_settings (dict): Settings passed to the optimizer, default is `{'lr_q':0.1, 'lr_t':0.1, 'steps':100}`.
-        
-        
+
+                An optional `'legacy_combo_gradient'` key (default `False`) restores the previous gradient
+                weighting for `optim_mode='color'` and `optim_mode='combination'`. By default the shape and
+                color gradients are each weighted by their own `dT/dV = (V_AA+V_BB)/(V_AA+V_BB-V)**2`, so the
+                mixed gradient is the gradient of the blended Tanimoto that is actually reported. Previously
+                both channels were weighted by `1/(V_AA+V_BB)`, which is not `dT/dV` and therefore set the
+                wrong *relative* weight between two differently-scaled gradients. Set this to `True` to
+                reproduce results from earlier versions. It has no effect on `optim_mode='shape'`, where the
+                normalization cancels out of the Adagrad step entirely.
+
+
         Returns:
                 Dict[str, pd.DataFrame]: A dictionary of Pandas DataFrames for each query molecule, containing the sorted overlap scores of the best dataset molecules. Each DataFrame includes overlap volumes and self-overlap volumes to facilitate post-processing of other score types. The columns include:
 

@@ -249,3 +249,63 @@ def test_alignment_is_a_proper_rotation_on_real_molecules():
         V = np.linalg.lstsq(a, aligned, rcond=None)[0].T
         assert np.linalg.det(V) > 0
         assert np.allclose(V @ V.T, np.eye(3), atol=1e-3)
+
+
+# --------------------------------------------------------------------------
+# C3: in combination mode the mixed gradient must be the gradient of the
+# blended Tanimoto that is actually reported.
+# --------------------------------------------------------------------------
+
+def _run_opt(backend, start_mode, color, mixing, legacy, n_query=6, n_target=25):
+    mols = _load("dataset.sdf", n_query + n_target)
+    cg = PharmacophoreGenerator()
+    qdata = prepare_from_rdkitmols(mols[:n_query], color=color,
+                                   color_generator=cg, quiet=True)
+    tdata = prepare_from_rdkitmols(mols[n_query:], color=color,
+                                   color_generator=cg, quiet=True)
+    settings = {"lr_q": 0.1, "lr_t": 0.1, "steps": 100,
+                "legacy_combo_gradient": legacy}
+    if backend == "cuda":
+        overlay = CudaShapeOverlay(qdata, tdata, start_mode,
+                                   color_generator=cg if color else None,
+                                   mixing=mixing, verbosity=0, n_gpus=1,
+                                   optimizer_settings=settings)
+    else:
+        overlay = CppShapeOverlay(qdata, tdata, start_mode,
+                                  color_generator=cg if color else None,
+                                  mixing=mixing, verbosity=0,
+                                  optimizer_settings=settings)
+    return np.array(overlay.optimize_overlap())
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_shape_only_is_unaffected_by_combo_gradient_flag(backend):
+    """Shape-only must be bit-identical either way.
+
+    With a single channel the gradient is scaled by one positive constant,
+    which cancels exactly out of an Adagrad step
+    (lr * c*g / sqrt(sum (c*g)^2) == lr * g / sqrt(sum g^2)), so the
+    normalization never affected the shape-only trajectory and the flag must
+    not change it.
+    """
+    a = _run_opt(backend, 1, color=False, mixing=0.0, legacy=False)
+    b = _run_opt(backend, 1, color=False, mixing=0.0, legacy=True)
+    np.testing.assert_array_equal(a, b)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_combo_gradient_reaches_a_better_blended_tanimoto(backend):
+    """The corrected weighting optimises the reported objective.
+
+    g_combo = (1-m) * dTs/dVs * grad(Vs) + m * dTc/dVc * grad(Vc) is exactly
+    grad of the reported blend, so averaged over pairs it must not do worse
+    than the previous weighting, which mixed the two channels in the wrong
+    ratio.
+    """
+    new = _run_opt(backend, 1, color=True, mixing=0.5, legacy=False)
+    old = _run_opt(backend, 1, color=True, mixing=0.5, legacy=True)
+
+    # the flag must actually do something in combination mode
+    assert not np.array_equal(new[:, :, 0], old[:, :, 0])
+
+    assert np.mean(new[:, :, 0]) >= np.mean(old[:, :, 0])
