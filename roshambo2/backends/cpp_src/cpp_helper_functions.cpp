@@ -260,6 +260,11 @@ DTYPE volume_color(const DTYPE *molA, int NmolA, const int *molA_type,
       auto a = rmat[ta * N_features + tb];
       auto p = pmat[ta * N_features + tb];
 
+      // A zero interaction width means this feature pair does not interact,
+      // not that the Gaussian has zero width: its contribution is zero and
+      // evaluating it would divide by zero.
+      if (a == 0) continue;
+
       DTYPE wa = molA[i * D + 3];
       DTYPE wb = molB[j * D + 3];
 
@@ -372,6 +377,9 @@ std::array<DTYPE, 7> get_gradient_color(const DTYPE *molA, int NmolA,
       auto a = rmat[ta * N_features + tb];
       auto p = pmat[ta * N_features + tb];
 
+      // see volume_color()
+      if (a == 0) continue;
+
       DTYPE wa = molA[i * D + 3];
       DTYPE wb = molB[j * D + 3];
 
@@ -420,11 +428,17 @@ void single_conformer_optimiser(
   DTYPE M[3][3] = {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
 
   auto self_overlap_B = volume(molBT, NmolB_real, molBT, NmolB_real);
-  // For the color volume, offset the coords to start at the color features
-  auto self_overlap_B_color =
-      volume_color(&molBT[NmolB_real * D], NmolB_color, &molB_type[NmolB_real],
-                   &molBT[NmolB_real * D], NmolB_color, &molB_type[NmolB_real],
-                   rmat, pmat, N_features);
+  // For the color volume, offset the coords to start at the color features.
+  // With colour scoring off there are no colour features: the range holds only
+  // padding and rmat/pmat are a 1x1 placeholder, so indexing them is both out
+  // of bounds and numerically undefined. The colour volume is zero.
+  DTYPE self_overlap_B_color = 0.0;
+  if (optim_color) {
+    self_overlap_B_color =
+        volume_color(&molBT[NmolB_real * D], NmolB_color, &molB_type[NmolB_real],
+                     &molBT[NmolB_real * D], NmolB_color, &molB_type[NmolB_real],
+                     rmat, pmat, N_features);
+  }
   std::array<DTYPE, 7> cache = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 
   // optimization loop
@@ -470,10 +484,12 @@ void single_conformer_optimiser(
 
   auto vol = volume(molA, NmolA_real, molBT, NmolB_real);
 
-  auto vc =
-      volume_color(&molA[NmolA_real * D], NmolA_color, &molA_type[NmolA_real],
-                   &molBT[NmolB_real * D], NmolB_color, &molB_type[NmolB_real],
-                   rmat, pmat, N_features);
+  DTYPE vc = 0.0;
+  if (optim_color) {
+    vc = volume_color(&molA[NmolA_real * D], NmolA_color, &molA_type[NmolA_real],
+                      &molBT[NmolB_real * D], NmolB_color, &molB_type[NmolB_real],
+                      rmat, pmat, N_features);
+  }
 
   // compute tanimoto scores
   auto ts = vol / (self_overlap_A + self_overlap_B - vol);

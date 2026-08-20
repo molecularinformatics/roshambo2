@@ -379,9 +379,15 @@ void optimize_overlap_color(py::array_t<DTYPE> A, py::array_t<int> AT, py::array
             int NmolA_real = molA_num_atoms(k);
             int NmolA_color = NmolA -NmolA_real;
             auto self_overlap_A = volume(ptr_molA, NmolA_real, ptr_molA, NmolA_real);
-            auto self_overlap_A_color = volume_color(&ptr_molA[NmolA_real*D], NmolA_color, &ptr_molA_type[NmolA_real], 
-                                                    &ptr_molA[NmolA_real*D], NmolA_color, &ptr_molA_type[NmolA_real], 
+            // With colour scoring off there are no colour features here, only
+            // padding, and rmat/pmat are a 1x1 placeholder. See
+            // single_conformer_optimiser().
+            DTYPE self_overlap_A_color = 0.0;
+            if (optim_color){
+                self_overlap_A_color = volume_color(&ptr_molA[NmolA_real*D], NmolA_color, &ptr_molA_type[NmolA_real],
+                                                    &ptr_molA[NmolA_real*D], NmolA_color, &ptr_molA_type[NmolA_real],
                                                     ptr_rmat, ptr_pmat, N_features);
+            }
 
             // parallel loop over each dataset configuration
             {
