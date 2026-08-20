@@ -2,7 +2,9 @@
 requires = [
     "setuptools>=61.0",
     "pybind11",
-    "cmake"
+    "cmake>=3.24",
+    # setup.py prefers the Ninja generator when it can import ninja.
+    "ninja",
 ]
 build-backend = "setuptools.build_meta"
 
