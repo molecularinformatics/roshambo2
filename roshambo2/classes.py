@@ -95,6 +95,18 @@ class Roshambo2Mol:
 
         cvm = np.cov(self.original_coords, rowvar=False)
         _,_,v = np.linalg.svd(cvm)
+
+        # The SVD gives no guarantee about the handedness of the returned basis:
+        # any singular vector may come back with either sign, so det(v) can be -1.
+        # In that case `r @ v.T` is a reflection, and the molecule is silently
+        # replaced by its mirror image. The optimizer only ever searches proper
+        # rotations, so a mirrored molecule can never be superposed back onto a
+        # chiral partner and its score is that of the wrong enantiomer.
+        # Flip the least significant principal axis to keep the frame right-handed;
+        # this changes the frame as little as possible.
+        if np.linalg.det(v) < 0:
+            v[-1] = -v[-1]
+
         r = np.dot(r, v.T) # align to principal axis
 
         # center and align the color dummy atoms
