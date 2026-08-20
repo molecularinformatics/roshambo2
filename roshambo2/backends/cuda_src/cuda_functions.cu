@@ -696,7 +696,7 @@ __global__ void optimize(const float * molA_global, const int * molA_type_global
 
                 
                 //normalize q
-                float magq = sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] * q[3]*q[3]);
+                float magq = sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
 
                 // std::cout << magq << std::endl;
                 q[0] = q[0]/magq;

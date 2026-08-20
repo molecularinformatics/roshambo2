@@ -459,7 +459,7 @@ void single_conformer_optimiser(
       adagrad_step(q, t, g, cache, lr_q, lr_t);
     }
     // normalize q so that it is a unit quaternion
-    DTYPE magq = sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] * q[3] * q[3]);
+    DTYPE magq = sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
 
     q = q / magq;
   }
